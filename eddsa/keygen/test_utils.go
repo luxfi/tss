@@ -17,8 +17,8 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/bnb-chain/tss-lib/v2/test"
-	"github.com/bnb-chain/tss-lib/v2/tss"
+	"github.com/luxfi/tss/v2/test"
+	"github.com/luxfi/tss/v2/tss"
 )
 
 const (

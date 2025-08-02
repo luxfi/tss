@@ -14,8 +14,8 @@ import (
 	"hash"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/v2/common"
-	"github.com/bnb-chain/tss-lib/v2/crypto"
+	"github.com/luxfi/tss/v2/common"
+	"github.com/luxfi/tss/v2/crypto"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcutil/base58"
 	"golang.org/x/crypto/ripemd160"

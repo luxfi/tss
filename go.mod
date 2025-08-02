@@ -1,4 +1,4 @@
-module github.com/bnb-chain/tss-lib/v2
+module github.com/luxfi/tss/v2
 
 go 1.16
 
