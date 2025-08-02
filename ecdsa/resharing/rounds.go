@@ -10,10 +10,10 @@ import (
 	"errors"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/v2/common"
-	"github.com/bnb-chain/tss-lib/v2/crypto"
-	"github.com/bnb-chain/tss-lib/v2/ecdsa/keygen"
-	"github.com/bnb-chain/tss-lib/v2/tss"
+	"github.com/luxfi/tss/v2/common"
+	"github.com/luxfi/tss/v2/crypto"
+	"github.com/luxfi/tss/v2/ecdsa/keygen"
+	"github.com/luxfi/tss/v2/tss"
 )
 
 const (

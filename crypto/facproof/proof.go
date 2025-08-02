@@ -13,7 +13,7 @@ import (
 	"io"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/v2/common"
+	"github.com/luxfi/tss/v2/common"
 )
 
 const (

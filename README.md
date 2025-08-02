@@ -3,14 +3,14 @@
 
 [1]: https://img.shields.io/badge/license-MIT-blue.svg
 [2]: LICENSE
-[3]: https://godoc.org/github.com/bnb-chain/tss-lib?status.svg
-[4]: https://godoc.org/github.com/bnb-chain/tss-lib
-[5]: https://goreportcard.com/badge/github.com/bnb-chain/tss-lib
-[6]: https://goreportcard.com/report/github.com/bnb-chain/tss-lib
+[3]: https://godoc.org/github.com/luxfi/tss?status.svg
+[4]: https://godoc.org/github.com/luxfi/tss
+[5]: https://goreportcard.com/badge/github.com/luxfi/tss
+[6]: https://goreportcard.com/report/github.com/luxfi/tss
 
 Permissively MIT Licensed.
 
-Note! This is a library for developers. You may find a TSS tool that you can use with the Binance Chain CLI [here](https://docs.binance.org/tss.html).
+Note! This is a library for developers.
 
 ## Introduction
 This is an implementation of multi-party {t,n}-threshold ECDSA (Elliptic Curve Digital Signature Algorithm) based on Gennaro and Goldfeder CCS 2018 [1] and EdDSA (Edwards-curve Digital Signature Algorithm) following a similar approach.
@@ -24,7 +24,7 @@ This library includes three protocols:
 ⚠️ Do not miss [these important notes](#how-to-use-this-securely) on implementing this library securely
 
 ## Rationale
-ECDSA is used extensively for crypto-currencies such as Bitcoin, Ethereum (secp256k1 curve), NEO (NIST P-256 curve) and many more. 
+ECDSA is used extensively for crypto-currencies such as Bitcoin, Ethereum (secp256k1 curve), NEO (NIST P-256 curve) and many more.
 
 EdDSA is used extensively for crypto-currencies such as Cardano, Aeternity, Stellar Lumens and many more.
 
@@ -155,7 +155,7 @@ Additionally, there should be a mechanism in your transport to allow for "reliab
 Timeouts and errors should be handled by your application. The method `WaitingFor` may be called on a `Party` to get the set of other parties that it is still waiting for messages from. You may also get the set of culprit parties that caused an error from a `*tss.Error`.
 
 ## Security Audit
-A full review of this library was carried out by Kudelski Security and their final report was made available in October, 2019. A copy of this report [`audit-binance-tss-lib-final-20191018.pdf`](https://github.com/bnb-chain/tss-lib/releases/download/v1.0.0/audit-binance-tss-lib-final-20191018.pdf) may be found in the v1.0.0 release notes of this repository.
+A full review of this library was carried out by Kudelski Security and their final report was made available in October, 2019. A copy of this report [`audit-binance-tss-lib-final-20191018.pdf`](https://github.com/luxfi/tss/releases/download/v1.0.0/audit-binance-tss-lib-final-20191018.pdf) may be found in the v1.0.0 release notes of this repository.
 
 ## References
 \[1\] https://eprint.iacr.org/2019/114.pdf

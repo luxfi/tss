@@ -13,10 +13,10 @@ import (
 	"io"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/v2/common"
-	"github.com/bnb-chain/tss-lib/v2/crypto"
-	"github.com/bnb-chain/tss-lib/v2/crypto/paillier"
-	"github.com/bnb-chain/tss-lib/v2/tss"
+	"github.com/luxfi/tss/v2/common"
+	"github.com/luxfi/tss/v2/crypto"
+	"github.com/luxfi/tss/v2/crypto/paillier"
+	"github.com/luxfi/tss/v2/tss"
 )
 
 const (
