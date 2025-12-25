@@ -1,0 +1,603 @@
+---
+title: Getting Started
+description: Step-by-step guide to using Lux TSS for threshold signatures
+---
+
+# Getting Started Guide
+
+## Installation
+
+### Prerequisites
+
+- Go 1.19 or higher
+- Git
+- Basic understanding of threshold cryptography
+
+### Install the Library
+
+```bash
+# Install the TSS library
+go get -u github.com/luxfi/tss/v2
+
+# For development, clone the repository
+git clone https://github.com/luxfi/tss.git
+cd tss
+make test
+```
+
+## Basic Concepts
+
+### Understanding (t,n)-Threshold Schemes
+
+In a (t,n)-threshold signature scheme:
+- **n** = total number of parties (participants)
+- **t** = threshold value
+- **t+1** = minimum parties needed to sign
+
+Example configurations:
+- (2,3): 3 parties total, any 2 can sign
+- (3,5): 5 parties total, any 4 can sign
+- (5,7): 7 parties total, any 6 can sign
+
+### Protocol Phases
+
+1. **Key Generation**: Create distributed key shares
+2. **Signing**: Use shares to generate signatures
+3. **Resharing**: Update shares or change parties
+
+## Step 1: Key Generation
+
+Generate key shares for all parties without revealing the private key.
+
+### Complete Example
+
+```go
+package main
+
+import (
+    "crypto/rand"
+    "fmt"
+    "math/big"
+    "sync"
+    "time"
+
+    "github.com/luxfi/tss/v2"
+    "github.com/luxfi/tss/v2/ecdsa/keygen"
+    "github.com/luxfi/tss/v2/crypto"
+)
+
+func runKeyGeneration() {
+    // Configuration
+    threshold := 2
+    parties := 3
+
+    // Generate party IDs
+    partyIDs := make([]*tss.PartyID, parties)
+    for i := 0; i < parties; i++ {
+        key := new(big.Int).SetInt64(int64(i + 1))
+        partyIDs[i] = tss.NewPartyID(
+            fmt.Sprintf("party-%d", i),
+            fmt.Sprintf("Party %d", i),
+            key,
+        )
+    }
+    sortedIDs := tss.SortPartyIDs(partyIDs)
+
+    // Pre-generate parameters for efficiency
+    preParams, _ := keygen.GeneratePreParams(1 * time.Minute)
+
+    // Storage for results
+    keyShares := make([]*keygen.LocalPartySaveData, parties)
+    var wg sync.WaitGroup
+
+    // Message routing
+    messageRouter := make(map[string]chan []byte)
+    for _, id := range partyIDs {
+        messageRouter[id.Id] = make(chan []byte, 100)
+    }
+
+    // Start each party
+    for i := 0; i < parties; i++ {
+        wg.Add(1)
+        go func(index int) {
+            defer wg.Done()
+
+            // Setup channels
+            outCh := make(chan tss.Message, 100)
+            endCh := make(chan *keygen.LocalPartySaveData, 1)
+
+            // Create party context
+            ctx := tss.NewPeerContext(sortedIDs)
+            params := tss.NewParameters(
+                tss.S256(),
+                ctx,
+                partyIDs[index],
+                parties,
+                threshold,
+            )
+
+            // Create local party
+            party := keygen.NewLocalParty(
+                params,
+                outCh,
+                endCh,
+                preParams,
+            )
+
+            // Start protocol
+            go func() {
+                if err := party.Start(); err != nil {
+                    fmt.Printf("Party %d error: %v\n",
+                        index, err)
+                }
+            }()
+
+            // Message handling
+            go func() {
+                for msg := range outCh {
+                    bytes, _ := msg.WireBytes()
+                    // Route to recipients
+                    for _, to := range msg.GetTo() {
+                        if ch, ok := messageRouter[to.Id]; ok {
+                            ch <- bytes
+                        }
+                    }
+                }
+            }()
+
+            // Process incoming messages
+            go func() {
+                for bytes := range messageRouter[partyIDs[index].Id] {
+                    _, err := party.UpdateFromBytes(
+                        bytes,
+                        partyIDs[index],
+                        false,
+                    )
+                    if err != nil {
+                        fmt.Printf("Update error: %v\n", err)
+                    }
+                }
+            }()
+
+            // Wait for completion
+            keyShares[index] = <-endCh
+            fmt.Printf("Party %d completed keygen\n", index)
+        }(i)
+    }
+
+    wg.Wait()
+
+    // Verify all parties have same public key
+    publicKey := keyShares[0].ECDSAPub()
+    fmt.Printf("Generated public key: %s\n",
+        publicKey.X().String())
+}
+```
+
+### Pre-Parameter Generation
+
+For better performance, pre-generate safe primes:
+
+```go
+// Generate with specific concurrency
+preParams, err := keygen.GeneratePreParams(
+    2 * time.Minute,  // timeout
+    4,                // concurrency limit
+)
+
+if err != nil {
+    log.Fatal("Failed to generate pre-params:", err)
+}
+
+// Save for reuse
+savePreParams(preParams)
+```
+
+## Step 2: Threshold Signing
+
+Use the key shares to sign messages collaboratively.
+
+### Signing Example
+
+```go
+func runSigning(
+    keyShares []*keygen.LocalPartySaveData,
+    message []byte,
+) (*signing.SignatureData, error) {
+
+    // Hash the message
+    msgHash := crypto.SHA256(message)
+    msgInt := new(big.Int).SetBytes(msgHash)
+
+    // Select signing parties (t+1 needed)
+    signers := keyShares[:threshold+1]
+    numSigners := len(signers)
+
+    // Setup
+    signatures := make([]*signing.SignatureData, numSigners)
+    var wg sync.WaitGroup
+
+    // Message routing
+    messageRouter := make(map[string]chan []byte)
+    for _, share := range signers {
+        messageRouter[share.PartyID.Id] = make(chan []byte, 100)
+    }
+
+    // Create signing parties
+    for i, keyShare := range signers {
+        wg.Add(1)
+        go func(index int, share *keygen.LocalPartySaveData) {
+            defer wg.Done()
+
+            // Setup channels
+            outCh := make(chan tss.Message, 100)
+            endCh := make(chan *signing.SignatureData, 1)
+
+            // Get signer IDs
+            signerIDs := make([]*tss.PartyID, numSigners)
+            for j, s := range signers {
+                signerIDs[j] = s.PartyID
+            }
+            sortedSigners := tss.SortPartyIDs(signerIDs)
+
+            // Create parameters
+            ctx := tss.NewPeerContext(sortedSigners)
+            params := tss.NewParameters(
+                tss.S256(),
+                ctx,
+                share.PartyID,
+                numSigners,
+                threshold,
+            )
+
+            // Create signing party
+            party := signing.NewLocalParty(
+                msgInt,
+                params,
+                share,
+                outCh,
+                endCh,
+            )
+
+            // Start signing
+            go func() {
+                if err := party.Start(); err != nil {
+                    fmt.Printf("Signing error: %v\n", err)
+                }
+            }()
+
+            // Handle outgoing messages
+            go func() {
+                for msg := range outCh {
+                    bytes, _ := msg.WireBytes()
+                    for _, to := range msg.GetTo() {
+                        if ch, ok := messageRouter[to.Id]; ok {
+                            ch <- bytes
+                        }
+                    }
+                }
+            }()
+
+            // Process incoming messages
+            go func() {
+                for bytes := range messageRouter[share.PartyID.Id] {
+                    party.UpdateFromBytes(
+                        bytes,
+                        share.PartyID,
+                        false,
+                    )
+                }
+            }()
+
+            // Wait for signature
+            signatures[index] = <-endCh
+            fmt.Printf("Party %d completed signing\n", index)
+        }(i, keyShare)
+    }
+
+    wg.Wait()
+
+    // All signatures should be identical
+    return signatures[0], nil
+}
+```
+
+### Verifying Signatures
+
+```go
+func verifySignature(
+    sig *signing.SignatureData,
+    publicKey *crypto.ECPoint,
+    message []byte,
+) bool {
+    // Method 1: Using signature data
+    return sig.Verify(publicKey, message)
+
+    // Method 2: Manual verification
+    msgHash := crypto.SHA256(message)
+    return crypto.Verify(
+        publicKey,
+        msgHash,
+        sig.R,
+        sig.S,
+    )
+}
+```
+
+## Step 3: Key Resharing
+
+Update the participant set or refresh shares for security.
+
+### Resharing Example
+
+```go
+func runResharing(
+    oldShares []*keygen.LocalPartySaveData,
+    newThreshold int,
+    newParties int,
+) ([]*keygen.LocalPartySaveData, error) {
+
+    // Create new party IDs (may overlap with old)
+    newPartyIDs := make([]*tss.PartyID, newParties)
+    for i := 0; i < newParties; i++ {
+        key := new(big.Int).SetInt64(int64(i + 100))
+        newPartyIDs[i] = tss.NewPartyID(
+            fmt.Sprintf("new-party-%d", i),
+            fmt.Sprintf("New Party %d", i),
+            key,
+        )
+    }
+
+    // Setup resharing parameters
+    oldCtx := tss.NewPeerContext(getOldPartyIDs(oldShares))
+    newCtx := tss.NewPeerContext(tss.SortPartyIDs(newPartyIDs))
+
+    resharingParams := tss.NewReSharingParameters(
+        tss.S256(),
+        oldCtx,
+        newCtx,
+        myPartyID,
+        len(oldShares),
+        oldThreshold,
+        newParties,
+        newThreshold,
+    )
+
+    // Run resharing protocol
+    // ... (similar to keygen with ReSharingParameters)
+
+    return newShares, nil
+}
+```
+
+## Working with Different Curves
+
+### ECDSA (secp256k1)
+
+```go
+// Bitcoin/Ethereum compatible
+curve := tss.S256()
+params := tss.NewParameters(curve, ctx, partyID, n, t)
+```
+
+### EdDSA (Edwards25519)
+
+```go
+// For EdDSA signatures
+curve := tss.Edwards()
+params := tss.NewParameters(curve, ctx, partyID, n, t)
+
+// Use eddsa packages instead of ecdsa
+import "github.com/luxfi/tss/v2/eddsa/keygen"
+import "github.com/luxfi/tss/v2/eddsa/signing"
+```
+
+## Error Handling
+
+### Protocol Errors
+
+```go
+func handleProtocolError(err *tss.Error) {
+    if err == nil {
+        return
+    }
+
+    // Check error type
+    switch err.Cause() {
+    case tss.ErrInvalidMessage:
+        // Handle invalid message
+        fmt.Printf("Invalid message from %v\n",
+            err.Culprits())
+
+    case tss.ErrTimeout:
+        // Handle timeout
+        fmt.Println("Protocol timed out")
+
+    default:
+        // General error
+        fmt.Printf("Protocol error: %v\n", err)
+    }
+
+    // Identify misbehaving parties
+    for _, culprit := range err.Culprits() {
+        fmt.Printf("Culprit: %s\n", culprit.Id)
+    }
+}
+```
+
+### Recovery Strategies
+
+```go
+// Retry with different parties
+func retryWithBackup(
+    primaryShares []*keygen.LocalPartySaveData,
+    backupShares []*keygen.LocalPartySaveData,
+) {
+    sig, err := runSigning(primaryShares, message)
+    if err != nil {
+        // Try with backup parties
+        combined := append(primaryShares[:t],
+            backupShares[0])
+        sig, err = runSigning(combined, message)
+    }
+}
+```
+
+## Testing Your Implementation
+
+### Unit Tests
+
+```go
+func TestKeyGeneration(t *testing.T) {
+    shares := runKeyGeneration(2, 3)
+
+    // Verify all shares have same public key
+    pubKey := shares[0].ECDSAPub()
+    for i := 1; i < len(shares); i++ {
+        if !shares[i].ECDSAPub().Equals(pubKey) {
+            t.Error("Public keys don't match")
+        }
+    }
+}
+
+func TestSigning(t *testing.T) {
+    shares := runKeyGeneration(2, 3)
+    message := []byte("test message")
+
+    // Test with minimum signers
+    sig, err := runSigning(shares[:2], message)
+    if err != nil {
+        t.Fatal(err)
+    }
+
+    // Verify signature
+    if !verifySignature(sig, shares[0].ECDSAPub(), message) {
+        t.Error("Signature verification failed")
+    }
+}
+```
+
+### Integration Tests
+
+```go
+func TestEndToEnd(t *testing.T) {
+    // Generate keys
+    shares := runKeyGeneration(3, 5)
+
+    // Sign multiple messages
+    messages := []string{
+        "Transaction 1",
+        "Transaction 2",
+        "Transaction 3",
+    }
+
+    for _, msg := range messages {
+        sig, err := runSigning(shares[:4], []byte(msg))
+        if err != nil {
+            t.Fatal(err)
+        }
+
+        if !verifySignature(sig,
+            shares[0].ECDSAPub(),
+            []byte(msg)) {
+            t.Error("Failed to verify:", msg)
+        }
+    }
+}
+```
+
+## Best Practices
+
+### 1. Secure Communication
+
+Always use encrypted channels:
+
+```go
+// Use TLS for network communication
+tlsConfig := &tls.Config{
+    MinVersion: tls.VersionTLS13,
+    // ... additional config
+}
+```
+
+### 2. Key Storage
+
+Encrypt shares at rest:
+
+```go
+func saveKeyShare(share *keygen.LocalPartySaveData) error {
+    // Serialize
+    data, err := json.Marshal(share)
+    if err != nil {
+        return err
+    }
+
+    // Encrypt
+    encrypted := encrypt(data, masterKey)
+
+    // Save to secure storage
+    return saveToVault(encrypted)
+}
+```
+
+### 3. Concurrent Operations
+
+Handle multiple signing sessions:
+
+```go
+type SigningPool struct {
+    sessions map[string]*signing.LocalParty
+    mu       sync.RWMutex
+}
+
+func (sp *SigningPool) NewSession(
+    sessionID string,
+    share *keygen.LocalPartySaveData,
+) {
+    sp.mu.Lock()
+    defer sp.mu.Unlock()
+
+    // Create isolated session
+    sp.sessions[sessionID] = createSigningParty(share)
+}
+```
+
+## Next Steps
+
+1. **Explore Examples**: Check the `/test` directory for more examples
+2. **Read Security Guide**: Understand security implications
+3. **Review API Reference**: Deep dive into all available functions
+4. **Join Community**: Contribute and get support
+
+## Troubleshooting
+
+### Common Issues
+
+**Issue**: "Protocol timeout"
+**Solution**: Increase message buffer sizes and check network latency
+
+**Issue**: "Invalid curve point"
+**Solution**: Ensure all parties use the same curve (S256 or Edwards)
+
+**Issue**: "Proof verification failed"
+**Solution**: Check that pre-parameters were generated correctly
+
+**Issue**: "Message routing failed"
+**Solution**: Verify party IDs match and channels are not blocked
+
+### Debug Logging
+
+Enable detailed logging:
+
+```go
+import "log"
+
+func debugParty(party tss.Party) {
+    log.Printf("Party %s in round %d",
+        party.PartyID().Id,
+        party.Round().Number())
+
+    waiting := party.WaitingFor()
+    log.Printf("Waiting for: %v", waiting)
+}
+```

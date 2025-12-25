@@ -1,0 +1,216 @@
+---
+title: Introduction
+description: Lux TSS - Threshold Signature Schemes for secure distributed key management
+---
+
+# Lux TSS - Threshold Signature Schemes
+
+## Overview
+
+Lux TSS (Threshold Signature Schemes) is a production-ready implementation of multi-party threshold cryptographic protocols for ECDSA and EdDSA. This library enables secure distributed key management where multiple parties collaborate to generate signatures without any single party having access to the complete private key.
+
+## What is Threshold Signature Scheme?
+
+A threshold signature scheme is a cryptographic protocol that allows a group of parties to jointly produce signatures. In a (t,n)-threshold scheme:
+- **n** = total number of participants
+- **t** = threshold number (minimum parties needed to sign)
+- Any **t+1** parties can collaborate to produce a valid signature
+- Fewer than **t+1** parties cannot generate a signature or recover the private key
+
+## Key Features
+
+### High Performance
+- Optimized cryptographic operations using Go's native math/big library
+- Concurrent processing for computationally intensive operations
+- Pre-computation support for safe primes and Paillier parameters
+- Efficient message passing between parties
+
+### Production Ready
+- Battle-tested implementation based on Gennaro-Goldfeder 2018 research
+- Comprehensive error handling and recovery mechanisms
+- Support for both ECDSA (secp256k1) and EdDSA (Edwards25519) curves
+- Extensive test coverage including edge cases
+
+### Security Properties
+- **No Trusted Dealer**: Key generation without centralized authority
+- **Proactive Security**: Support for key resharing to refresh shares
+- **Verifiable Secret Sharing**: Feldman VSS for share verification
+- **Zero-Knowledge Proofs**: Multiple ZKPs for protocol security
+- **Side-Channel Resistance**: Constant-time operations where critical
+
+### Comprehensive API
+- Clean, intuitive Go API with type safety
+- Protocol-level abstractions (LocalParty, Round, Message)
+- Built-in party identification and management
+- Flexible message routing for various network topologies
+
+## Core Protocols
+
+### 1. Distributed Key Generation (DKG)
+Generate key shares without any party knowing the complete private key:
+- Each party generates partial key shares
+- Verifiable secret sharing ensures share validity
+- Commitment schemes prevent cheating
+- Final public key derived from all contributions
+
+### 2. Threshold Signing
+Collaboratively generate signatures using key shares:
+- Pre-signing phase for efficiency
+- MPC (Multi-Party Computation) for signature generation
+- No reconstruction of private key during signing
+- Signature indistinguishable from single-party signature
+
+### 3. Key Resharing
+Dynamically change the participant group while preserving the key:
+- Add or remove parties from the signing group
+- Change the threshold value (t)
+- Refresh shares for proactive security
+- Maintain same public key throughout
+
+## Use Cases
+
+### Cryptocurrency Wallets
+- **Multi-signature wallets** without on-chain overhead
+- **Institutional custody** with distributed control
+- **Cold storage** with geographically distributed shares
+- **Hardware wallet** integration for enhanced security
+
+### Key Management Systems
+- **Enterprise PKI** with distributed root keys
+- **Cloud HSM** replacement with software-based security
+- **Secure enclaves** for sensitive operations
+- **Certificate authorities** with distributed signing
+
+### Blockchain Infrastructure
+- **Validator key management** for PoS networks
+- **Bridge operators** for cross-chain protocols
+- **Oracle networks** with threshold signing
+- **Layer 2 solutions** requiring distributed validation
+
+## Architecture
+
+### Core Components
+
+```
+┌─────────────────────────────────────────────────┐
+│                   TSS Library                    │
+├─────────────────────────────────────────────────┤
+│                                                  │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────┐  │
+│  │  ECDSA   │  │  EdDSA   │  │   Common     │  │
+│  │          │  │          │  │              │  │
+│  │ • Keygen │  │ • Keygen │  │ • Party Mgmt │  │
+│  │ • Sign   │  │ • Sign   │  │ • Messages   │  │
+│  │ • Reshare│  │ • Reshare│  │ • Rounds     │  │
+│  └──────────┘  └──────────┘  └──────────────┘  │
+│                                                  │
+│  ┌───────────────────────────────────────────┐  │
+│  │           Cryptographic Primitives         │  │
+│  │                                            │  │
+│  │ • Paillier Encryption  • Schnorr Proofs   │  │
+│  │ • VSS (Feldman)        • DLN Proofs       │  │
+│  │ • Commitments          • Range Proofs     │  │
+│  │ • MTA Protocol         • Factor Proofs    │  │
+│  └───────────────────────────────────────────┘  │
+│                                                  │
+└─────────────────────────────────────────────────┘
+```
+
+### Protocol Flow
+
+#### Key Generation Flow
+```
+Round 1: Share Generation
+├── Generate ui (partial key)
+├── Compute VSS shares
+├── Create Paillier keys
+└── Broadcast commitments
+
+Round 2: Share Distribution
+├── Send VSS shares to parties
+├── Generate DLN proofs
+└── Broadcast Paillier public keys
+
+Round 3: Share Verification
+├── Verify VSS shares
+├── Verify DLN proofs
+├── Compute xi (key share)
+└── Store save data
+```
+
+#### Signing Flow
+```
+Round 1: Pre-signing
+├── Generate ki, γi
+├── Compute Ri = ki·G
+└── Broadcast commitments
+
+Round 2-4: MTA Protocol
+├── MTA for ki·γj
+├── MTA for ki·wj
+└── Verify MTA proofs
+
+Round 5-7: Signature Generation
+├── Compute R = Σ(Ri)
+├── Compute si shares
+├── Verify signature shares
+└── Output (r,s) signature
+```
+
+## Security Considerations
+
+### Threat Model
+- **Honest Majority**: Protocol secure with up to t malicious parties
+- **Network Adversary**: Resilient to message delays and reordering
+- **Adaptive Security**: Security maintained even if adversary corrupts parties adaptively
+- **Concurrent Sessions**: Safe to run multiple signing sessions simultaneously
+
+### Implementation Security
+- **Secure Random Generation**: Uses crypto/rand for all randomness
+- **Side-Channel Protection**: Constant-time bigint operations
+- **Memory Safety**: Go's memory management prevents common vulnerabilities
+- **Input Validation**: Comprehensive validation of all protocol messages
+
+### Best Practices
+1. **Secure Storage**: Encrypt key shares at rest
+2. **Network Security**: Use TLS for party communication
+3. **Access Control**: Implement authentication for party participation
+4. **Audit Logging**: Log all protocol operations for forensics
+5. **Key Rotation**: Regularly refresh shares using resharing protocol
+
+## Quick Start
+
+### Installation
+```bash
+go get -u github.com/luxfi/tss/v2
+```
+
+### Basic Usage
+```go
+import (
+    "github.com/luxfi/tss/v2"
+    "github.com/luxfi/tss/v2/ecdsa/keygen"
+    "github.com/luxfi/tss/v2/ecdsa/signing"
+)
+
+// Initialize parameters
+curve := tss.S256() // or tss.Edwards() for EdDSA
+parties := tss.SortPartyIDs(getPartyIDs())
+ctx := tss.NewPeerContext(parties)
+params := tss.NewParameters(curve, ctx, thisParty, n, t)
+
+// Run key generation
+party := keygen.NewLocalParty(params, outCh, endCh)
+go party.Start()
+
+// Handle messages and get final key shares
+// ... (see API reference for details)
+```
+
+## Next Steps
+
+- [Getting Started Guide](/docs/getting-started) - Step-by-step tutorial
+- [API Reference](/docs/api) - Complete API documentation
+- [Security Guide](/docs/security) - Security best practices
+- [Examples](/docs/examples) - Sample implementations
+- [Architecture](/docs/architecture) - Deep dive into design

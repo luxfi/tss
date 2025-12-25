@@ -1,0 +1,541 @@
+---
+title: Security Guide
+description: Security considerations and best practices for Lux TSS implementation
+---
+
+# Security Guide
+
+## Overview
+
+This guide covers essential security considerations for implementing and deploying Lux TSS in production environments. Threshold signature schemes provide strong security guarantees, but proper implementation and deployment are critical for maintaining these properties.
+
+## Threat Model
+
+### Adversary Capabilities
+
+The TSS protocols are designed to be secure against adversaries with the following capabilities:
+
+1. **Threshold Corruption**: Can corrupt up to `t` parties (where `t` is the threshold)
+2. **Network Control**: Can delay, reorder, or drop messages
+3. **Adaptive Corruption**: Can choose which parties to corrupt during protocol execution
+4. **Side Channels**: May have access to timing or power consumption data
+
+### Security Assumptions
+
+The security of Lux TSS relies on:
+
+1. **Honest Majority**: At least `t+1` parties remain honest
+2. **Cryptographic Hardness**: Discrete logarithm problem is hard
+3. **Random Oracle Model**: Hash functions behave as random oracles
+4. **Secure Channels**: Communication between parties is authenticated
+
+## Key Security Properties
+
+### 1. Threshold Security
+
+The fundamental security property of TSS:
+
+```
+Security Property: An adversary controlling ≤ t parties cannot:
+- Generate valid signatures
+- Recover the private key
+- Bias the key generation process
+```
+
+**Implementation Requirements**:
+- Never share raw key shares between parties
+- Validate all incoming shares using VSS
+- Use commitment schemes to prevent equivocation
+
+### 2. Robustness
+
+The protocol can complete successfully despite malicious behavior:
+
+```go
+// Detect and exclude malicious parties
+func (p *LocalParty) ValidateMessage(msg Message) error {
+    // Verify zero-knowledge proofs
+    if !msg.VerifyZKProof() {
+        return NewError(ErrInvalidProof, msg.GetFrom())
+    }
+
+    // Verify VSS shares
+    if !msg.VerifyVSS() {
+        return NewError(ErrInvalidShare, msg.GetFrom())
+    }
+
+    return nil
+}
+```
+
+### 3. Fairness
+
+All honest parties receive the same output:
+
+- Use reliable broadcast for critical messages
+- Implement complaint mechanisms for misbehavior
+- Ensure atomic commitment of final results
+
+## Cryptographic Security
+
+### Zero-Knowledge Proofs
+
+Lux TSS uses multiple ZKPs to ensure protocol security without revealing secrets:
+
+#### Schnorr Proofs
+Prove knowledge of discrete logarithm:
+```
+Proof of: knowing x such that X = g^x
+Without revealing: x
+```
+
+#### Range Proofs
+Prove value is within a specific range:
+```
+Proof of: m ∈ [0, q]
+Without revealing: m
+Application: MTA protocol
+```
+
+#### DLN Proofs
+Prove Paillier modulus is well-formed:
+```
+Proof of: N = p·q where p,q are safe primes
+Without revealing: p, q
+Application: Paillier key validation
+```
+
+### Side-Channel Protection
+
+Protect against timing and power analysis attacks:
+
+```go
+// Constant-time operations
+func ConstantTimeCompare(a, b []byte) bool {
+    if len(a) != len(b) {
+        return false
+    }
+
+    var result byte
+    for i := 0; i < len(a); i++ {
+        result |= a[i] ^ b[i]
+    }
+
+    return result == 0
+}
+
+// Blinding for scalar multiplication
+func BlindedScalarMult(k *big.Int, P *ECPoint) *ECPoint {
+    // Add random multiple of curve order
+    blind := RandomInt(curve.N)
+    kPrime := new(big.Int).Add(k,
+        new(big.Int).Mul(blind, curve.N))
+
+    return P.ScalarMult(kPrime)
+}
+```
+
+## Implementation Security
+
+### 1. Secure Random Generation
+
+Always use cryptographically secure randomness:
+
+```go
+import (
+    "crypto/rand"
+    "io"
+)
+
+// Use crypto/rand for all randomness
+func GenerateRandomBytes(n int) ([]byte, error) {
+    bytes := make([]byte, n)
+    _, err := io.ReadFull(rand.Reader, bytes)
+    if err != nil {
+        return nil, err
+    }
+    return bytes, nil
+}
+
+// Never use math/rand for cryptographic operations
+// ❌ BAD: rand.Intn(n)
+// ✓ GOOD: crypto/rand
+```
+
+### 2. Memory Security
+
+Protect sensitive data in memory:
+
+```go
+// Clear sensitive data after use
+func ClearBytes(b []byte) {
+    for i := range b {
+        b[i] = 0
+    }
+}
+
+// Use defer to ensure cleanup
+func ProcessKeyShare(share *big.Int) {
+    shareBytes := share.Bytes()
+    defer ClearBytes(shareBytes)
+
+    // Process share...
+}
+```
+
+### 3. Input Validation
+
+Validate all inputs rigorously:
+
+```go
+func ValidatePartyInput(input *PartyInput) error {
+    // Check party ID
+    if input.PartyID == nil || input.PartyID.Key == nil {
+        return errors.New("invalid party ID")
+    }
+
+    // Verify curve point is valid
+    if !input.PublicKey.IsOnCurve() {
+        return errors.New("public key not on curve")
+    }
+
+    // Check threshold constraints
+    if input.Threshold > input.PartyCount/2 {
+        return errors.New("threshold too high")
+    }
+
+    // Verify signature if present
+    if input.Signature != nil {
+        if !VerifySignature(input) {
+            return errors.New("invalid signature")
+        }
+    }
+
+    return nil
+}
+```
+
+## Network Security
+
+### 1. Authenticated Channels
+
+Use TLS or similar for party communication:
+
+```go
+// TLS configuration for party communication
+func SecureTLSConfig() *tls.Config {
+    return &tls.Config{
+        MinVersion:               tls.VersionTLS13,
+        CurvePreferences:         []tls.CurveID{tls.X25519},
+        PreferServerCipherSuites: true,
+        CipherSuites: []uint16{
+            tls.TLS_AES_256_GCM_SHA384,
+            tls.TLS_CHACHA20_POLY1305_SHA256,
+        },
+    }
+}
+```
+
+### 2. Message Authentication
+
+Authenticate all protocol messages:
+
+```go
+func AuthenticateMessage(msg Message, key []byte) []byte {
+    h := hmac.New(sha256.New, key)
+    h.Write(msg.Bytes())
+    return h.Sum(nil)
+}
+
+func VerifyMessageAuth(msg Message, mac, key []byte) bool {
+    expected := AuthenticateMessage(msg, key)
+    return hmac.Equal(mac, expected)
+}
+```
+
+### 3. Replay Protection
+
+Prevent replay attacks:
+
+```go
+type ReplayProtector struct {
+    seen map[string]time.Time
+    mu   sync.RWMutex
+    ttl  time.Duration
+}
+
+func (rp *ReplayProtector) CheckAndAdd(msgID string) error {
+    rp.mu.Lock()
+    defer rp.mu.Unlock()
+
+    // Clean old entries
+    rp.cleanup()
+
+    // Check if seen
+    if _, exists := rp.seen[msgID]; exists {
+        return errors.New("replay detected")
+    }
+
+    // Add to seen
+    rp.seen[msgID] = time.Now()
+    return nil
+}
+```
+
+## Storage Security
+
+### 1. Key Share Encryption
+
+Encrypt key shares at rest:
+
+```go
+func EncryptKeyShare(share *keygen.LocalPartySaveData, password []byte) ([]byte, error) {
+    // Derive encryption key from password
+    salt := make([]byte, 32)
+    rand.Read(salt)
+
+    key := pbkdf2.Key(password, salt, 100000, 32, sha256.New)
+
+    // Serialize share
+    plaintext, err := json.Marshal(share)
+    if err != nil {
+        return nil, err
+    }
+
+    // Encrypt with AES-GCM
+    block, _ := aes.NewCipher(key)
+    gcm, _ := cipher.NewGCM(block)
+
+    nonce := make([]byte, gcm.NonceSize())
+    rand.Read(nonce)
+
+    ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
+
+    // Return salt + ciphertext
+    return append(salt, ciphertext...), nil
+}
+```
+
+### 2. Hardware Security Modules (HSM)
+
+Use HSMs for enhanced key protection:
+
+```go
+// HSM interface for key storage
+type HSMStorage interface {
+    StoreKeyShare(id string, share []byte) error
+    RetrieveKeyShare(id string) ([]byte, error)
+    DeleteKeyShare(id string) error
+    GenerateKey() (*KeyHandle, error)
+    Sign(handle *KeyHandle, data []byte) ([]byte, error)
+}
+
+// Example with PKCS#11
+func StoreInHSM(share *keygen.LocalPartySaveData) error {
+    hsm := ConnectToHSM()
+    defer hsm.Close()
+
+    // Wrap key share with HSM master key
+    wrapped, err := hsm.WrapKey(share.Xi.Bytes())
+    if err != nil {
+        return err
+    }
+
+    // Store wrapped key
+    return hsm.Store("tss-share", wrapped)
+}
+```
+
+### 3. Backup and Recovery
+
+Implement secure backup procedures:
+
+```go
+// Shamir secret sharing for backup
+func CreateBackup(share *keygen.LocalPartySaveData, n, k int) ([][]byte, error) {
+    // Serialize share
+    data, err := json.Marshal(share)
+    if err != nil {
+        return nil, err
+    }
+
+    // Split using Shamir's secret sharing
+    shares, err := shamir.Split(data, n, k)
+    if err != nil {
+        return nil, err
+    }
+
+    // Encrypt each backup share
+    encrypted := make([][]byte, n)
+    for i, s := range shares {
+        encrypted[i], err = EncryptBackupShare(s, i)
+        if err != nil {
+            return nil, err
+        }
+    }
+
+    return encrypted, nil
+}
+```
+
+## Operational Security
+
+### 1. Access Control
+
+Implement strict access controls:
+
+```go
+type AccessController struct {
+    permissions map[string][]Permission
+}
+
+func (ac *AccessController) Authorize(
+    party *PartyID,
+    action Action,
+) error {
+    perms, exists := ac.permissions[party.Id]
+    if !exists {
+        return errors.New("unauthorized party")
+    }
+
+    for _, p := range perms {
+        if p.Allows(action) {
+            return nil
+        }
+    }
+
+    return errors.New("insufficient permissions")
+}
+```
+
+### 2. Audit Logging
+
+Maintain comprehensive audit logs:
+
+```go
+type AuditLogger struct {
+    logger *log.Logger
+    signer crypto.Signer
+}
+
+func (al *AuditLogger) LogProtocolEvent(event ProtocolEvent) {
+    entry := AuditEntry{
+        Timestamp: time.Now().UTC(),
+        EventType: event.Type,
+        PartyID:   event.PartyID,
+        Round:     event.Round,
+        Details:   event.Details,
+    }
+
+    // Sign log entry
+    signature, _ := al.signEntry(entry)
+    entry.Signature = signature
+
+    // Write to tamper-proof log
+    al.logger.Printf("%+v", entry)
+}
+```
+
+### 3. Monitoring and Alerting
+
+Monitor for suspicious behavior:
+
+```go
+type SecurityMonitor struct {
+    thresholds map[string]int
+    alerts     chan Alert
+}
+
+func (sm *SecurityMonitor) CheckAnomaly(party *PartyID, metric string, value int) {
+    threshold, exists := sm.thresholds[metric]
+    if !exists || value <= threshold {
+        return
+    }
+
+    // Generate alert
+    alert := Alert{
+        Severity: High,
+        Party:    party,
+        Metric:   metric,
+        Value:    value,
+        Message:  fmt.Sprintf("Anomaly detected: %s exceeded threshold", metric),
+    }
+
+    select {
+    case sm.alerts <- alert:
+    default:
+        log.Printf("Alert channel full: %+v", alert)
+    }
+}
+```
+
+## Security Checklist
+
+### Pre-Deployment
+
+- [ ] All dependencies audited and up-to-date
+- [ ] Cryptographic parameters validated
+- [ ] Network endpoints secured with TLS
+- [ ] Access controls configured
+- [ ] Audit logging enabled
+- [ ] Key shares encrypted at rest
+- [ ] Backup procedures tested
+- [ ] Incident response plan prepared
+
+### Runtime
+
+- [ ] Monitor for protocol anomalies
+- [ ] Regular security updates
+- [ ] Periodic key rotation
+- [ ] Access logs reviewed
+- [ ] Network traffic analyzed
+- [ ] System resources monitored
+- [ ] Backup integrity verified
+
+### Post-Incident
+
+- [ ] Isolate affected parties
+- [ ] Analyze audit logs
+- [ ] Assess key compromise risk
+- [ ] Execute key resharing if needed
+- [ ] Update security measures
+- [ ] Document lessons learned
+
+## Common Vulnerabilities
+
+### 1. Weak Randomness
+
+**Vulnerability**: Using predictable random sources
+**Impact**: Key recovery, signature forgery
+**Mitigation**: Always use crypto/rand
+
+### 2. Missing Input Validation
+
+**Vulnerability**: Not validating curve points
+**Impact**: Invalid curve attacks
+**Mitigation**: Verify all points are on curve
+
+### 3. Side-Channel Leaks
+
+**Vulnerability**: Timing variations in operations
+**Impact**: Key extraction through timing
+**Mitigation**: Use constant-time operations
+
+### 4. Replay Attacks
+
+**Vulnerability**: Reusing old protocol messages
+**Impact**: Protocol manipulation
+**Mitigation**: Include nonces and timestamps
+
+### 5. Insufficient Authentication
+
+**Vulnerability**: Not verifying message origin
+**Impact**: Man-in-the-middle attacks
+**Mitigation**: Authenticate all messages
+
+## References
+
+1. [Gennaro & Goldfeder 2018](https://eprint.iacr.org/2019/114.pdf) - Fast Multiparty Threshold ECDSA
+2. [Lindell 2017](https://eprint.iacr.org/2017/552.pdf) - Fast Secure Two-Party ECDSA
+3. [Canetti et al. 1999](https://www.cs.tau.ac.il/~canetti/materials/gkr03.pdf) - Adaptive Security
+4. [NIST SP 800-57](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-57pt1r5.pdf) - Key Management Recommendations

@@ -1,0 +1,577 @@
+---
+title: API Reference
+description: Complete API documentation for Lux TSS library
+---
+
+# API Reference
+
+## Core Types
+
+### tss.Parameters
+Configuration parameters for TSS protocols.
+
+```go
+type Parameters struct {
+    // Elliptic curve (S256 for ECDSA, Edwards for EdDSA)
+    EC() elliptic.Curve
+
+    // Party context containing all participants
+    Parties() *PeerContext
+
+    // This party's identifier
+    PartyID() *PartyID
+
+    // Total number of parties
+    PartyCount() int
+
+    // Threshold value (t in (t,n)-threshold)
+    Threshold() int
+
+    // Random source for protocol operations
+    Rand() io.Reader
+
+    // Random source for partial key generation
+    PartialKeyRand() io.Reader
+}
+```
+
+### tss.PartyID
+Unique identifier for a party in the protocol.
+
+```go
+type PartyID struct {
+    // Unique identifier string
+    Id string
+
+    // Human-readable name (optional)
+    Moniker string
+
+    // Cryptographic key for party identification
+    Key *big.Int
+
+    // Index in the sorted party list
+    Index int
+}
+
+// Constructor
+func NewPartyID(id, moniker string, key *big.Int) *PartyID
+```
+
+### tss.PeerContext
+Manages the set of parties participating in a protocol.
+
+```go
+type PeerContext struct {
+    // Get all party IDs
+    IDs() SortedPartyIDs
+
+    // Set IDs excluding a specific party
+    IDsExcluding(exclude *PartyID) SortedPartyIDs
+}
+
+// Constructor
+func NewPeerContext(parties SortedPartyIDs) *PeerContext
+```
+
+### tss.Message
+Protocol message exchanged between parties.
+
+```go
+type Message interface {
+    // Get all recipient party IDs
+    GetTo() []*PartyID
+
+    // Get sender party ID
+    GetFrom() *PartyID
+
+    // Check if broadcast message
+    IsBroadcast() bool
+
+    // Check if message is for a specific party
+    IsToOldCommittee() bool
+
+    // Get message routing information
+    GetRouting() MessageRouting
+
+    // Validate message structure
+    ValidateBasic() bool
+
+    // Get message type string
+    Type() string
+
+    // Serialize message to bytes
+    Bytes() ([]byte, error)
+}
+```
+
+## Key Generation API
+
+### keygen.LocalParty
+Local party implementation for distributed key generation.
+
+```go
+type LocalParty struct {
+    tss.BaseParty
+    // Internal state
+}
+
+// Create new key generation party
+func NewLocalParty(
+    params *tss.Parameters,
+    out chan<- tss.Message,
+    end chan<- *LocalPartySaveData,
+    preParams *PreParams, // Optional, can be nil
+) tss.Party
+
+// Start the key generation protocol
+func (p *LocalParty) Start() *tss.Error
+
+// Process incoming message
+func (p *LocalParty) UpdateFromBytes(
+    wireBytes []byte,
+    from *tss.PartyID,
+    isBroadcast bool,
+) (ok bool, err *tss.Error)
+
+// Handle protocol errors
+func (p *LocalParty) ValidateMessage(msg tss.Message) *tss.Error
+```
+
+### keygen.LocalPartySaveData
+Persistent data from key generation that must be stored securely.
+
+```go
+type LocalPartySaveData struct {
+    // This party's key share
+    Xi *big.Int
+
+    // Shamir shares from all parties
+    Ks []*big.Int
+
+    // BigXj[j] = Xj = gˣʲ
+    BigXj []*crypto.ECPoint
+
+    // Paillier key for MTA protocol
+    PaillierSK *paillier.PrivateKey
+
+    // Paillier public keys from all parties
+    PaillierPKs []*paillier.PublicKey
+
+    // Pre-computed safe primes
+    NTilde, H1, H2 *big.Int
+
+    // Threshold value
+    Threshold int
+
+    // Party information
+    PartyID *tss.PartyID
+}
+
+// Get the public key
+func (data *LocalPartySaveData) ECDSAPub() *crypto.ECPoint
+```
+
+### keygen.PreParams
+Pre-computed parameters for faster key generation.
+
+```go
+type PreParams struct {
+    // Paillier safe primes
+    PaillierSK *paillier.PrivateKey
+
+    // Safe primes for ZKPs
+    NTilde, H1, H2 *big.Int
+}
+
+// Generate pre-parameters with timeout
+func GeneratePreParams(
+    timeout time.Duration,
+    optionalConcurrency ...int,
+) (*PreParams, error)
+```
+
+## Signing API
+
+### signing.LocalParty
+Local party implementation for threshold signing.
+
+```go
+type LocalParty struct {
+    tss.BaseParty
+    // Internal state
+}
+
+// Create new signing party
+func NewLocalParty(
+    msg *big.Int, // Message hash to sign
+    params *tss.Parameters,
+    key *keygen.LocalPartySaveData,
+    out chan<- tss.Message,
+    end chan<- *SignatureData,
+) tss.Party
+
+// Start the signing protocol
+func (p *LocalParty) Start() *tss.Error
+
+// Process incoming message
+func (p *LocalParty) UpdateFromBytes(
+    wireBytes []byte,
+    from *tss.PartyID,
+    isBroadcast bool,
+) (ok bool, err *tss.Error)
+```
+
+### signing.SignatureData
+Final signature output from the signing protocol.
+
+```go
+type SignatureData struct {
+    // Signature components
+    R, S *big.Int
+
+    // Signature bytes (DER encoded for ECDSA)
+    Signature []byte
+
+    // Message that was signed
+    M *big.Int
+
+    // Recovery ID for public key recovery
+    SignatureRecovery []byte
+}
+
+// Verify signature against public key
+func (sig *SignatureData) Verify(
+    pubKey *crypto.ECPoint,
+    msg []byte,
+) bool
+```
+
+## Resharing API
+
+### resharing.LocalParty
+Local party implementation for key resharing protocol.
+
+```go
+type LocalParty struct {
+    tss.BaseParty
+    // Internal state
+}
+
+// Create new resharing party for old committee member
+func NewLocalParty(
+    params *tss.ReSharingParameters,
+    key *keygen.LocalPartySaveData, // nil for new members
+    out chan<- tss.Message,
+    end chan<- *keygen.LocalPartySaveData,
+) tss.Party
+
+// Start the resharing protocol
+func (p *LocalParty) Start() *tss.Error
+
+// Process incoming message
+func (p *LocalParty) UpdateFromBytes(
+    wireBytes []byte,
+    from *tss.PartyID,
+    isBroadcast bool,
+) (ok bool, err *tss.Error)
+```
+
+### tss.ReSharingParameters
+Extended parameters for resharing protocol.
+
+```go
+type ReSharingParameters struct {
+    *Parameters
+
+    // Old committee configuration
+    OldParties() *PeerContext
+    OldPartyCount() int
+    OldThreshold() int
+
+    // New committee configuration
+    NewParties() *PeerContext
+    NewPartyCount() int
+    NewThreshold() int
+
+    // Check if party is in old committee
+    IsOldCommittee() bool
+
+    // Check if party is in new committee
+    IsNewCommittee() bool
+}
+```
+
+## Cryptographic Primitives
+
+### crypto.ECPoint
+Elliptic curve point operations.
+
+```go
+type ECPoint struct {
+    // Get coordinates
+    X() *big.Int
+    Y() *big.Int
+
+    // Curve operations
+    Add(p2 *ECPoint) *ECPoint
+    ScalarMult(k *big.Int) *ECPoint
+
+    // Check if point at infinity
+    IsOnCurve() bool
+
+    // Serialize/deserialize
+    Bytes() []byte
+    SetBytes([]byte) (*ECPoint, error)
+}
+
+// Create new point
+func NewECPoint(curve elliptic.Curve, x, y *big.Int) *ECPoint
+
+// Generate random point
+func GeneratePoint(curve elliptic.Curve, k *big.Int) *ECPoint
+```
+
+### paillier.PrivateKey / PublicKey
+Paillier homomorphic encryption for MTA protocol.
+
+```go
+type PrivateKey struct {
+    PublicKey
+    Lambda *big.Int
+    Mu     *big.Int
+}
+
+type PublicKey struct {
+    N        *big.Int
+    NSquared *big.Int
+    G        *big.Int
+}
+
+// Generate new Paillier keypair
+func GenerateKeyPair(
+    rand io.Reader,
+    bits int,
+) (*PrivateKey, *PublicKey, error)
+
+// Encrypt with public key
+func (pk *PublicKey) Encrypt(m *big.Int) (*big.Int, error)
+
+// Decrypt with private key
+func (sk *PrivateKey) Decrypt(c *big.Int) (*big.Int, error)
+
+// Homomorphic addition
+func (pk *PublicKey) Add(c1, c2 *big.Int) *big.Int
+```
+
+### vss.Share
+Verifiable secret sharing implementation (Feldman VSS).
+
+```go
+// Create shares for secret sharing
+func Create(
+    ec elliptic.Curve,
+    threshold int,
+    secret *big.Int,
+    indexes []int,
+    rand io.Reader,
+) (vss []*Share, shares []*Share, err error)
+
+// Verify a share against VSS commitments
+func (share *Share) Verify(
+    ec elliptic.Curve,
+    threshold int,
+    vss []*crypto.ECPoint,
+) bool
+
+// Reconstruct secret from shares
+func Reconstruct(
+    ec elliptic.Curve,
+    shares []*Share,
+) (*big.Int, error)
+```
+
+## Protocol Flow Control
+
+### tss.Party
+Base interface for all protocol parties.
+
+```go
+type Party interface {
+    // Start the protocol
+    Start() *Error
+
+    // Process incoming message bytes
+    UpdateFromBytes(
+        wireBytes []byte,
+        from *PartyID,
+        isBroadcast bool,
+    ) (ok bool, err *Error)
+
+    // Get party ID
+    PartyID() *PartyID
+
+    // Get current round number
+    Round() Round
+
+    // Check if protocol completed
+    WaitingFor() []*PartyID
+}
+```
+
+### tss.Round
+Protocol round interface.
+
+```go
+type Round interface {
+    // Get round number
+    Number() int
+
+    // Check if round can proceed
+    CanProceed() bool
+
+    // Process received messages
+    Update() (bool, *Error)
+
+    // Move to next round
+    NextRound() Round
+
+    // Check if final round
+    IsFinal() bool
+}
+```
+
+## Error Handling
+
+### tss.Error
+Protocol error with context information.
+
+```go
+type Error struct {
+    // Error cause
+    Cause() error
+
+    // Culprit party IDs
+    Culprits() []*PartyID
+
+    // Error message
+    Error() string
+
+    // Check if error is caused by specific party
+    IsCulprit(id *PartyID) bool
+}
+
+// Create new error
+func NewError(
+    err error,
+    task string,
+    round int,
+    culprits ...*PartyID,
+) *Error
+```
+
+## Utility Functions
+
+### Curve Selection
+```go
+// Get secp256k1 curve for ECDSA
+func S256() elliptic.Curve
+
+// Get Edwards25519 curve for EdDSA
+func Edwards() elliptic.Curve
+```
+
+### Party Management
+```go
+// Sort party IDs deterministically
+func SortPartyIDs(ids []*PartyID) SortedPartyIDs
+
+// Generate unique party key from string
+func GeneratePartyKey(seed string) *big.Int
+```
+
+### Message Handling
+```go
+// Parse message from wire format
+func ParseWireMessage(bytes []byte) (Message, error)
+
+// Route message to appropriate handler
+func RouteMessage(
+    msg Message,
+    parties map[*PartyID]Party,
+) error
+```
+
+## Example: Complete Key Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "sync"
+    "time"
+
+    "github.com/luxfi/tss/v2"
+    "github.com/luxfi/tss/v2/ecdsa/keygen"
+)
+
+func runKeygen(threshold, parties int) {
+    // Setup
+    var wg sync.WaitGroup
+    outChs := make([]chan tss.Message, parties)
+    endChs := make([]chan *keygen.LocalPartySaveData, parties)
+
+    // Create party IDs
+    partyIDs := make([]*tss.PartyID, parties)
+    for i := 0; i < parties; i++ {
+        id := fmt.Sprintf("party-%d", i)
+        key := tss.GeneratePartyKey(id)
+        partyIDs[i] = tss.NewPartyID(id, id, key)
+    }
+    sortedIDs := tss.SortPartyIDs(partyIDs)
+
+    // Pre-generate parameters for speed
+    preParams, _ := keygen.GeneratePreParams(1 * time.Minute)
+
+    // Start parties
+    for i := 0; i < parties; i++ {
+        wg.Add(1)
+        go func(index int) {
+            defer wg.Done()
+
+            // Setup channels
+            outChs[index] = make(chan tss.Message, parties*10)
+            endChs[index] = make(chan *keygen.LocalPartySaveData, 1)
+
+            // Create parameters
+            ctx := tss.NewPeerContext(sortedIDs)
+            params := tss.NewParameters(
+                tss.S256(),
+                ctx,
+                partyIDs[index],
+                parties,
+                threshold,
+            )
+
+            // Create and start party
+            party := keygen.NewLocalParty(
+                params,
+                outChs[index],
+                endChs[index],
+                preParams,
+            )
+
+            go party.Start()
+
+            // Handle message routing
+            for msg := range outChs[index] {
+                // Route to recipients
+                go routeMessage(msg, partyIDs, outChs)
+            }
+        }(i)
+    }
+
+    wg.Wait()
+    fmt.Println("Key generation completed!")
+}
+```
