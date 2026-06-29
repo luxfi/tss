@@ -1,3 +1,5 @@
+<p align="center"><img src=".github/hero.svg" alt="tss" width="880"></p>
+
 # Multi-Party Threshold Signature Scheme
 [![MIT licensed][1]][2] [![GoDoc][3]][4] [![Go Report Card][5]][6]
 
